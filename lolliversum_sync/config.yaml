@@ -1,0 +1,21 @@
+name: Lolliversum Sync
+version: "2026.10.20.3"
+slug: lolliversum_sync
+description: Holt die Einstellungen dieses Standorts aus dem privaten GitHub-Repo lolliversum/smarthome und lädt sie neu.
+arch: [aarch64, amd64]
+init: false
+startup: application
+boot: auto
+homeassistant_api: true
+map:
+  - homeassistant_config:rw
+options:
+  standort: gut
+  github_schluessel: ""
+  zweig: main
+  takt_minuten: 5
+schema:
+  standort: list(gut|leon|kiel)
+  github_schluessel: password
+  zweig: str
+  takt_minuten: int(1,1440)

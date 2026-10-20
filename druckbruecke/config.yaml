@@ -1,0 +1,19 @@
+name: Lolliversum Druckbrücke
+version: "2026.10.20.3"
+slug: lolliversum_druckbruecke
+description: Holt Druckaufträge vom Lolliversum-Portal und gibt sie an Drucker im lokalen Netz (keine offenen Ports).
+url: https://intranet.lolliversum.de/druck
+arch: [aarch64, amd64]
+init: false
+startup: services
+boot: auto
+options:
+  server: https://intranet.lolliversum.de
+  standort: leon
+  schluessel: ""
+  netze: 192.168.178.0/24
+schema:
+  server: url
+  standort: list(hof|laden|leon)
+  schluessel: password
+  netze: str
