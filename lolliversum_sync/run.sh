@@ -1,10 +1,12 @@
-#!/bin/sh
+#!/usr/bin/with-contenv sh
 # Lolliversum Sync: nur der Ordner <standort>/ aus dem Repo landet in /config/lolliversum/.
 # Die übrige Home-Assistant-Konfiguration wird NIE angefasst. Vor jedem Neuladen prüft Home Assistant die Konfig;
 # ist sie fehlerhaft, bleibt der alte Stand aktiv und es kommt eine Meldung in Home Assistant.
 O=/data/options.json
 STANDORT=$(jq -r .standort $O); SCHL=$(jq -r .github_schluessel $O); ZWEIG=$(jq -r .zweig $O); TAKT=$(jq -r .takt_minuten $O)
 ZIEL=/homeassistant/lolliversum; ARBEIT=/data/repo
+# Berechtigung für die Home-Assistant-API (s6 gibt die Umgebung sonst nicht an das Skript weiter).
+[ -z "$SUPERVISOR_TOKEN" ] && [ -f /run/s6/container_environment/SUPERVISOR_TOKEN ] && SUPERVISOR_TOKEN=$(cat /run/s6/container_environment/SUPERVISOR_TOKEN)
 API="http://supervisor/core/api"; AUTH="Authorization: Bearer $SUPERVISOR_TOKEN"
 melden() { curl -s -X POST -H "$AUTH" -H "Content-Type: application/json" "$API/services/persistent_notification/create" \
   -d "{\"title\":\"Lolliversum Sync\",\"message\":\"$1\",\"notification_id\":\"lolliversum_sync\"}" >/dev/null; }
@@ -17,7 +19,9 @@ while true; do
   if [ "$NEU" != "$ALT" ] && [ -d "$ARBEIT/$STANDORT" ]; then
     mkdir -p "$ZIEL"; cp -a "$ZIEL" /data/vorher 2>/dev/null
     rsync -a --delete "$ARBEIT/$STANDORT/" "$ZIEL/"
-    ERG=$(curl -s -X POST -H "$AUTH" "$API/config/core/check_config" | jq -r .result)
+    ANTW=$(curl -s -X POST -H "$AUTH" "$API/config/core/check_config")
+    ERG=$(echo "$ANTW" | jq -r .result 2>/dev/null)
+    [ -z "$ERG" ] && echo "Prüfung nicht möglich, Antwort: $(echo "$ANTW" | head -c 120)"
     if [ "$ERG" = "valid" ]; then
       curl -s -X POST -H "$AUTH" "$API/services/homeassistant/reload_all" >/dev/null
       echo "$NEU" > /data/stand; echo "Stand $NEU geladen ($STANDORT)"
