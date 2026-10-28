@@ -13,6 +13,8 @@ melden() { curl -s -X POST -H "$AUTH" -H "Content-Type: application/json" "$API/
 [ -z "$SCHL" ] && { echo "Kein GitHub-Schlüssel eingetragen."; sleep 3600; exit 1; }
 URL="https://x-access-token:${SCHL}@github.com/lolliversum/smarthome.git"
 while true; do
+  # Schlüssel kann sich ändern: Adresse bei jedem Lauf neu setzen, sonst bleibt der alte Token im Klon hängen.
+  [ -d "$ARBEIT/.git" ] && git -C "$ARBEIT" remote set-url origin "$URL"
   if [ -d "$ARBEIT/.git" ]; then git -C "$ARBEIT" fetch -q origin "$ZWEIG" && git -C "$ARBEIT" reset -q --hard "origin/$ZWEIG"
   else git clone -q --depth 1 -b "$ZWEIG" "$URL" "$ARBEIT"; fi || { echo "GitHub nicht erreichbar"; sleep 60; continue; }
   NEU=$(git -C "$ARBEIT" rev-parse --short HEAD); ALT=$(cat /data/stand 2>/dev/null)

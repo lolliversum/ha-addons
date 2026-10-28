@@ -1,5 +1,5 @@
 name: Lolliversum Sync
-version: "2026.10.20.4"
+version: "2026.10.28.1"
 slug: lolliversum_sync
 description: Holt die Einstellungen dieses Standorts aus dem privaten GitHub-Repo lolliversum/smarthome und lädt sie neu.
 arch: [aarch64, amd64]
