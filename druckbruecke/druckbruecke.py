@@ -328,11 +328,31 @@ def monitor_zeile(z):
         return {"art": "klingelt", "nummer": t[3], "nebenstelle": "", "verbindung": t[2]}
     if len(t) >= 5 and t[1] == "CONNECT":
         return {"art": "angenommen", "nummer": t[4], "nebenstelle": t[3], "verbindung": t[2]}
+    if len(t) >= 4 and t[1] == "DISCONNECT":   # 02.11.2026: Ende mit Dauer in Sekunden (0 = nie verbunden)
+        return {"art": "ende", "dauer": int(t[3]) if t[3].strip().isdigit() else 0, "verbindung": t[2]}
     return None
 
 
+def monitor_folge(offen, m):
+    """02.11.2026: Monitor-Zeile → Meldung ans Portal (oder None). offen = {verbindung: {nummer, nebenstelle, angenommen}}.
+    Nur eingehende Gespräche. Ende: angenommen → „beendet“ mit Dauer, sonst „verpasst“."""
+    v = m["verbindung"]
+    if m["art"] == "klingelt":
+        offen[v] = {"nummer": m["nummer"], "nebenstelle": "", "angenommen": False}
+        return m
+    if v not in offen:   # ausgehendes Gespräch: nicht melden
+        return None
+    if m["art"] == "angenommen":
+        offen[v].update(angenommen=True, nebenstelle=m["nebenstelle"])
+        return m
+    a = offen.pop(v)
+    if a["angenommen"]:
+        return {"art": "beendet", "nummer": a["nummer"], "nebenstelle": a["nebenstelle"], "dauer": m["dauer"], "verbindung": v}
+    return {"art": "verpasst", "nummer": a["nummer"], "nebenstelle": "", "verbindung": v}
+
+
 def anrufmonitor():
-    eingehend = set()
+    offen = {}
     while True:
         try:
             with socket.create_connection((KONF["fritz_host"], 1012), timeout=30) as s:
@@ -347,14 +367,9 @@ def anrufmonitor():
                     while b"\n" in puffer:
                         zeile, puffer = puffer.split(b"\n", 1)
                         m = monitor_zeile(zeile.decode("utf-8", "replace"))
+                        m = monitor_folge(offen, m) if m else None
                         if not m:
                             continue
-                        if m["art"] == "klingelt":
-                            eingehend.add(m["verbindung"])
-                        elif m["verbindung"] not in eingehend:   # CONNECT eines ausgehenden Gesprächs: nicht melden
-                            continue
-                        else:
-                            eingehend.discard(m["verbindung"])
                         try:
                             _anfrage("POST", f"/telefon/api/{KONF['standort']}/anruf", m)
                         except (urllib.error.URLError, OSError):
