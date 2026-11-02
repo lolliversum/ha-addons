@@ -21,10 +21,11 @@ Start: python3 druckbruecke.py            (Dauerschleife)
        python3 druckbruecke.py --einmal   (abarbeiten, dann Ende)
        python3 druckbruecke.py --pruefen  (Server + Schlüssel testen, nichts drucken)
 """
-import base64, ipaddress, json, os, re, socket, subprocess, sys, tempfile, time, urllib.error, urllib.request
+import base64, ipaddress, json, os, re, socket, subprocess, sys, tempfile, threading, time, urllib.error, urllib.request
 from pathlib import Path
 
-VERSION = "2026-11-01"   # + FRITZ!Box: Telefonliste (Namen + interne Nummern) alle 6 h ans Portal
+VERSION = "2026-11-02"   # + Selbst-Update (alle 6 h, SHA-256 vom Portal)
+_VERSION_01_11 = "2026-11-01"   # + FRITZ!Box: Telefonliste (Namen + interne Nummern) alle 6 h ans Portal
 _VERSION_30_10 = "2026-10-30"   # + FRITZ!Box: Wählhilfe (TR-064) und Anrufmonitor (Port 1012), nur mit FRITZ_HOST
 _VERSION_ALT = "2026-10-23"   # + Rückkanal: Auftrag mit "antwort": true liest die Antwort des Druckers (Etikettenzähler)
 
@@ -160,6 +161,46 @@ def runde():
     return True
 
 
+# ---------------------------------------------------------------- Selbst-Update (N0, 02.11.2026)
+# Beim Start und alle 6 h: /version fragen; ist das Portal neuer, Datei vom Portal laden, SHA-256 gegen die Antwort prüfen,
+# Syntax + VERSION prüfen, die eigene Datei ersetzen (alte als .alt) und neu starten. Nur vom Portal, nie von anderswo.
+UPDATE_ABSTAND = 6 * 3600
+
+
+def update_pruefen(datei=None):
+    """True = Datei wurde ersetzt (Aufrufer startet neu). Jeder Fehler -> False, die Brücke läuft einfach weiter."""
+    import hashlib
+    datei = Path(datei or __file__)
+    try:
+        _, roh = _anfrage("GET", f"/druck/api/{KONF['standort']}/version")
+        info = json.loads(roh)
+        neu = str(info.get("version", ""))
+        if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", neu) or neu <= VERSION:
+            return False
+        _, code = _anfrage("GET", f"/druck/api/{KONF['standort']}/bruecke.py")
+        if hashlib.sha256(code).hexdigest() != str(info.get("sha256", "")).lower():
+            print("Update verworfen: SHA-256 stimmt nicht", flush=True)
+            return False
+        if ('VERSION = "%s"' % neu).encode() not in code:
+            print("Update verworfen: Version in der Datei passt nicht", flush=True)
+            return False
+        compile(code, "druckbruecke.py", "exec")
+        tmp = datei.with_name(datei.name + ".neu")
+        tmp.write_bytes(code)
+        if datei.exists():
+            datei.with_name(datei.name + ".alt").write_bytes(datei.read_bytes())
+        os.replace(tmp, datei)
+        print("Update", VERSION, "->", neu, "eingespielt, starte neu", flush=True)
+        return True
+    except Exception as e:  # noqa: BLE001
+        print("Update-Prüfung fehlgeschlagen:", str(e)[:120], flush=True)
+        return False
+
+
+def neu_starten():
+    os.execv(sys.executable, [sys.executable, str(Path(__file__).resolve())] + sys.argv[1:])
+
+
 # ---------------------------------------------------------------- FRITZ!Box (30.10.2026): Telefon im Portal
 # Wählen: Portal-Auftrag {nummer, telefon} → TR-064 X_VoIP: erst das Wählhilfe-Telefon setzen (X_AVM-DE_DialSetConfig),
 # dann X_AVM-DE_DialNumber. Die FRITZ!Box klingelt das Telefon an, nach dem Abheben wird gewählt.
@@ -190,9 +231,24 @@ def fritz_waehlen(nummer, telefon=""):
     nummer = re.sub(r"[^0-9*#]", "", str(nummer))
     if not nummer:
         raise ValueError("keine Nummer")
+    vorher = ""
     if telefon:
+        # 02.11.2026: TAPICall auf den PCs nutzt dieselbe Wählhilfe – vorher eingestelltes Telefon merken und danach
+        # zurückstellen, damit deren nächster Anruf nicht beim Telefon des Portal-Nutzers klingelt.
+        try:
+            vorher = _feld(_tr064("X_AVM-DE_DialGetConfig", {}), "NewX_AVM-DE_PhoneName")
+        except Exception:  # noqa
+            vorher = ""
         _tr064("X_AVM-DE_DialSetConfig", {"NewX_AVM-DE_PhoneName": telefon})
     _tr064("X_AVM-DE_DialNumber", {"NewX_AVM-DE_PhoneNumber": nummer})
+    if vorher and vorher != telefon:
+        def _zurueck():
+            time.sleep(int(os.environ.get("FRITZ_ZURUECK_SEK", "8")))
+            try:
+                _tr064("X_AVM-DE_DialSetConfig", {"NewX_AVM-DE_PhoneName": vorher})
+            except Exception as e:  # noqa
+                print("Wählhilfe zurückstellen fehlgeschlagen:", e, flush=True)
+        threading.Thread(target=_zurueck, daemon=True).start()
 
 
 def _feld(xml, name):
@@ -341,8 +397,15 @@ def main(argv):
         while runde():
             pass
         return 0
+    if update_pruefen():
+        neu_starten()
+    letzt = time.time()
     telefon_starten()
     while True:
+        if time.time() - letzt > UPDATE_ABSTAND:
+            letzt = time.time()
+            if update_pruefen():
+                neu_starten()
         if not runde():
             time.sleep(KONF["takt"])
 
