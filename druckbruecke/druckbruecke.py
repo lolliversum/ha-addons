@@ -24,7 +24,9 @@ Start: python3 druckbruecke.py            (Dauerschleife)
 import base64, ipaddress, json, os, re, socket, subprocess, sys, tempfile, time, urllib.error, urllib.request
 from pathlib import Path
 
-VERSION = "2026-10-17"
+VERSION = "2026-11-01"   # + FRITZ!Box: Telefonliste (Namen + interne Nummern) alle 6 h ans Portal
+_VERSION_30_10 = "2026-10-30"   # + FRITZ!Box: Wählhilfe (TR-064) und Anrufmonitor (Port 1012), nur mit FRITZ_HOST
+_VERSION_ALT = "2026-10-23"   # + Rückkanal: Auftrag mit "antwort": true liest die Antwort des Druckers (Etikettenzähler)
 
 
 def _konf():
@@ -42,6 +44,9 @@ def _konf():
         k["drucker"] = json.loads(e["DRUCK_DRUCKER"])
     k.setdefault("drucker", {})
     k["takt"] = float(e.get("DRUCK_TAKT") or k.get("takt_sekunden") or 2)
+    k["fritz_host"] = e.get("FRITZ_HOST") or k.get("fritz_host") or ""            # z. B. 192.168.178.1 (leer = kein Telefon)
+    k["fritz_benutzer"] = e.get("FRITZ_BENUTZER") or k.get("fritz_benutzer") or ""
+    k["fritz_passwort"] = e.get("FRITZ_PASSWORT") or k.get("fritz_passwort") or ""
     return k
 
 
@@ -88,9 +93,31 @@ def _roh(host, port, inhalt, wecken=False):
         s.sendall(inhalt)
 
 
+def abfragen(host, port, inhalt, warten=4.0):
+    """Befehl schicken und die Antwort des Druckers lesen (z. B. ! U1 getvar "odometer.total_label_count")."""
+    with socket.create_connection((host, port), timeout=6) as s:
+        s.sendall(inhalt)
+        s.settimeout(warten)
+        teile = []
+        try:
+            while sum(len(t) for t in teile) < 4096:
+                t = s.recv(1024)
+                if not t:
+                    break
+                teile.append(t)
+                s.settimeout(0.5)   # nach dem ersten Stück nur noch kurz auf den Rest warten
+        except OSError:
+            pass
+    return b"".join(teile)
+
+
 def drucken(auftrag):
     z = ziel(auftrag["drucker"])
     inhalt = base64.b64decode(auftrag["daten"])
+    if auftrag.get("antwort"):
+        if z["art"] != "9100":
+            raise RuntimeError("Abfragen gehen nur an Netzwerkdrucker (Port 9100)")
+        return abfragen(z["host"], int(z.get("port", 9100)), inhalt)
     for i in range(int(auftrag.get("kopien") or 1)):
         if z["art"] == "9100":
             _roh(z["host"], int(z.get("port", 9100)), inhalt, wecken=bool(auftrag.get("wecken")) and i == 0)
@@ -115,18 +142,188 @@ def runde():
     if status == 204:
         return False
     auftrag = json.loads(roh)
+    antwort = None
     try:
-        drucken(auftrag)
+        antwort = drucken(auftrag)
         ok, meldung = True, ""
     except Exception as e:  # Druckerfehler zurückmelden, nicht abstürzen
         ok, meldung = False, str(e)
     print(time.strftime("%H:%M:%S"), f"#{auftrag['id']} {auftrag.get('titel', '')} → {auftrag['drucker']}:",
           "ok" if ok else meldung, flush=True)
     try:
-        _anfrage("POST", f"/druck/api/{KONF['standort']}/fertig/{auftrag['id']}", {"ok": ok, "meldung": meldung})
+        rueck = {"ok": ok, "meldung": meldung}
+        if auftrag.get("antwort") and antwort is not None:
+            rueck["antwort"] = base64.b64encode(antwort).decode()
+        _anfrage("POST", f"/druck/api/{KONF['standort']}/fertig/{auftrag['id']}", rueck)
     except (urllib.error.URLError, OSError):
         pass  # Server gibt den Auftrag nach 5 Min. erneut frei
     return True
+
+
+# ---------------------------------------------------------------- FRITZ!Box (30.10.2026): Telefon im Portal
+# Wählen: Portal-Auftrag {nummer, telefon} → TR-064 X_VoIP: erst das Wählhilfe-Telefon setzen (X_AVM-DE_DialSetConfig),
+# dann X_AVM-DE_DialNumber. Die FRITZ!Box klingelt das Telefon an, nach dem Abheben wird gewählt.
+# Voraussetzungen in der FRITZ!Box: Heimnetz → Netzwerk → Netzwerkeinstellungen „Zugriff für Anwendungen zulassen“ (TR-064),
+# Telefonie → Anrufe → Wählhilfe „Wählhilfe verwenden“, ein FRITZ!Box-Benutzer mit Recht „Sprachnachrichten, Faxnachrichten,
+# FRITZ!App Fon und Anrufliste“; Anrufmonitor einmalig mit #96*5* an einem Telefon einschalten.
+_TR064 = "urn:dslforum-org:service:X_VoIP:1"
+
+
+def _tr064(aktion, argumente, dienst=None, pfad="/upnp/control/x_voip"):
+    import xml.sax.saxutils as su
+    dienst = dienst or _TR064
+    rumpf = "".join(f"<{k}>{su.escape(str(v))}</{k}>" for k, v in argumente.items())
+    xml = ('<?xml version="1.0" encoding="utf-8"?><s:Envelope s:encodingStyle="http://schemas.xmlsoap.org/soap/encoding/" '
+           'xmlns:s="http://schemas.xmlsoap.org/soap/envelope/"><s:Body>'
+           f'<u:{aktion} xmlns:u="{dienst}">{rumpf}</u:{aktion}></s:Body></s:Envelope>').encode()
+    url = f"http://{KONF['fritz_host']}:49000{pfad}"
+    pw = urllib.request.HTTPPasswordMgrWithDefaultRealm()
+    pw.add_password(None, url, KONF["fritz_benutzer"], KONF["fritz_passwort"])
+    oeffner = urllib.request.build_opener(urllib.request.HTTPDigestAuthHandler(pw))
+    req = urllib.request.Request(url, data=xml, headers={"Content-Type": 'text/xml; charset="utf-8"',
+                                                         "SOAPAction": f"{dienst}#{aktion}"})
+    with oeffner.open(req, timeout=10) as r:
+        return r.read()
+
+
+def fritz_waehlen(nummer, telefon=""):
+    nummer = re.sub(r"[^0-9*#]", "", str(nummer))
+    if not nummer:
+        raise ValueError("keine Nummer")
+    if telefon:
+        _tr064("X_AVM-DE_DialSetConfig", {"NewX_AVM-DE_PhoneName": telefon})
+    _tr064("X_AVM-DE_DialNumber", {"NewX_AVM-DE_PhoneNumber": nummer})
+
+
+def _feld(xml, name):
+    m = re.search(rb"<" + re.escape(name.encode()) + rb">([^<]*)</", xml)
+    return m.group(1).decode("utf-8", "replace").strip() if m else ""
+
+
+def fritz_telefone():
+    """01.11.2026: alle Telefone der FRITZ!Box mit Namen (so wie die Wählhilfe sie braucht) und – soweit ableitbar – der
+    internen Nummer, die der Anrufmonitor meldet (FON1–3 → 0–2, DECT 1–6 → 10–15, IP-Telefone → 20…)."""
+    dect = {}
+    try:
+        ids = _feld(_tr064("GetDECTHandsetList", {}, "urn:dslforum-org:service:X_AVM-DE_OnTel:1", "/upnp/control/x_contact"), "NewDectIDList")
+        for i in [x for x in ids.split(",") if x.strip().isdigit()]:
+            name = _feld(_tr064("GetDECTHandsetInfo", {"NewDectID": i}, "urn:dslforum-org:service:X_AVM-DE_OnTel:1", "/upnp/control/x_contact"), "NewHandsetName")
+            if name:
+                dect[name] = str(9 + int(i))
+    except Exception:  # noqa — ohne DECT-Liste nur die Namen
+        pass
+    aus, ip = [], 20
+    for idx in range(1, 41):
+        try:
+            name = _feld(_tr064("X_AVM-DE_GetPhonePort", {"NewIndex": idx}), "NewX_AVM-DE_PhoneName")
+        except Exception:  # noqa — Ende der Liste
+            break
+        if not name:
+            continue
+        intern = ""
+        m = re.match(r"FON(\d)", name)
+        if name.startswith("DECT: "):
+            intern = dect.get(name[6:].strip(), "")
+        elif m:
+            intern = str(int(m.group(1)) - 1)
+        elif re.match(r"(LAN|WLAN|IP|ISDN)", name, re.I):
+            intern, ip = str(ip), ip + 1
+        aus.append({"name": name, "intern": intern})
+    return aus
+
+
+def telefone_melden():
+    try:
+        liste = fritz_telefone()
+        if liste:
+            _anfrage("POST", f"/telefon/api/{KONF['standort']}/telefone", {"telefone": liste, "version": VERSION})
+            print(time.strftime("%H:%M:%S"), f"Telefonliste gemeldet: {len(liste)} Telefone", flush=True)
+    except Exception as e:  # noqa
+        print(time.strftime("%H:%M:%S"), "Telefonliste:", str(e)[:200], flush=True)
+
+
+def telefon_runde():
+    try:
+        status, roh = _anfrage("GET", f"/telefon/api/{KONF['standort']}/naechster")
+    except (urllib.error.URLError, OSError):
+        return False
+    if status == 204:
+        return False
+    a = json.loads(roh)
+    try:
+        fritz_waehlen(a["nummer"], a.get("telefon", ""))
+        ok, meldung = True, ""
+    except urllib.error.HTTPError as e:
+        ok, meldung = False, f"FRITZ!Box lehnt ab ({e.code}) – TR-064, Wählhilfe und Benutzer prüfen"
+    except Exception as e:  # noqa
+        ok, meldung = False, str(e)[:200]
+    print(time.strftime("%H:%M:%S"), f"Telefon #{a['id']} → {a.get('telefon', '')}:", "ok" if ok else meldung, flush=True)
+    try:
+        _anfrage("POST", f"/telefon/api/{KONF['standort']}/fertig/{a['id']}", {"ok": ok, "meldung": meldung})
+    except (urllib.error.URLError, OSError):
+        pass
+    return True
+
+
+def monitor_zeile(z):
+    """Anrufmonitor-Zeile → Meldung ans Portal oder None. RING = klingelt, CONNECT (eingehend) = angenommen."""
+    t = z.strip().split(";")
+    if len(t) >= 5 and t[1] == "RING":
+        return {"art": "klingelt", "nummer": t[3], "nebenstelle": "", "verbindung": t[2]}
+    if len(t) >= 5 and t[1] == "CONNECT":
+        return {"art": "angenommen", "nummer": t[4], "nebenstelle": t[3], "verbindung": t[2]}
+    return None
+
+
+def anrufmonitor():
+    eingehend = set()
+    while True:
+        try:
+            with socket.create_connection((KONF["fritz_host"], 1012), timeout=30) as s:
+                s.settimeout(None)
+                puffer = b""
+                print(time.strftime("%H:%M:%S"), "Anrufmonitor verbunden", flush=True)
+                while True:
+                    teil = s.recv(1024)
+                    if not teil:
+                        break
+                    puffer += teil
+                    while b"\n" in puffer:
+                        zeile, puffer = puffer.split(b"\n", 1)
+                        m = monitor_zeile(zeile.decode("utf-8", "replace"))
+                        if not m:
+                            continue
+                        if m["art"] == "klingelt":
+                            eingehend.add(m["verbindung"])
+                        elif m["verbindung"] not in eingehend:   # CONNECT eines ausgehenden Gesprächs: nicht melden
+                            continue
+                        else:
+                            eingehend.discard(m["verbindung"])
+                        try:
+                            _anfrage("POST", f"/telefon/api/{KONF['standort']}/anruf", m)
+                        except (urllib.error.URLError, OSError):
+                            pass
+        except OSError as e:
+            print(time.strftime("%H:%M:%S"), "Anrufmonitor:", e, "(mit #96*5* einschalten?)", flush=True)
+        time.sleep(20)
+
+
+def telefon_starten():
+    if not KONF.get("fritz_host"):
+        return
+    import threading
+    threading.Thread(target=anrufmonitor, daemon=True, name="anrufmonitor").start()
+
+    def _waehlen():
+        letzte = 0
+        while True:
+            if time.time() - letzte > 6 * 3600:   # Telefonliste beim Start und alle 6 h
+                letzte = time.time()
+                telefone_melden()
+            if not telefon_runde():
+                time.sleep(1.5)
+    threading.Thread(target=_waehlen, daemon=True, name="waehlhilfe").start()
+    print("Telefon: FRITZ!Box", KONF["fritz_host"], "(Wählhilfe + Anrufmonitor)", flush=True)
 
 
 def main(argv):
@@ -144,6 +341,7 @@ def main(argv):
         while runde():
             pass
         return 0
+    telefon_starten()
     while True:
         if not runde():
             time.sleep(KONF["takt"])

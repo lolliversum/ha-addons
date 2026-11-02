@@ -5,6 +5,10 @@ export DRUCK_SERVER="$(python3 -c "import json;print(json.load(open('$O'))['serv
 export DRUCK_STANDORT="$(python3 -c "import json;print(json.load(open('$O'))['standort'])")"
 export DRUCK_TOKEN="$(python3 -c "import json;print(json.load(open('$O'))['schluessel'])")"
 export DRUCK_NETZE="$(python3 -c "import json;print(json.load(open('$O'))['netze'])")"
+# 02.11.2026: FRITZ!Box (nur Laden) – Wählen aus dem Portal + Anrufmonitor; leer = aus
+export FRITZ_HOST="$(python3 -c "import json;print(json.load(open('$O')).get('fritz_host') or '')")"
+export FRITZ_BENUTZER="$(python3 -c "import json;print(json.load(open('$O')).get('fritz_benutzer') or '')")"
+export FRITZ_PASSWORT="$(python3 -c "import json;print(json.load(open('$O')).get('fritz_passwort') or '')")"
 export PYTHONUNBUFFERED=1
 if [ -z "$DRUCK_TOKEN" ]; then
   echo "Kein Schlüssel eingetragen: im Portal /druck bei '$DRUCK_STANDORT' Schlüssel erzeugen und hier unter Konfiguration eintragen."

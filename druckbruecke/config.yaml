@@ -1,5 +1,5 @@
 name: Lolliversum Druckbrücke
-version: "2026.10.20.3"
+version: "2026.11.02.1"
 slug: lolliversum_druckbruecke
 description: Holt Druckaufträge vom Lolliversum-Portal und gibt sie an Drucker im lokalen Netz (keine offenen Ports).
 url: https://intranet.lolliversum.de/druck
@@ -12,8 +12,14 @@ options:
   standort: leon
   schluessel: ""
   netze: 192.168.178.0/24
+  fritz_host: ""
+  fritz_benutzer: ""
+  fritz_passwort: ""
 schema:
   server: url
   standort: list(hof|laden|leon)
   schluessel: password
   netze: str
+  fritz_host: str?
+  fritz_benutzer: str?
+  fritz_passwort: password?
