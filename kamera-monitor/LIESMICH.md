@@ -12,3 +12,13 @@ Strom an → Pi startet, schaltet TV per HDMI-CEC ein, Bild läuft. Niemand muss
 
 Kameras ändern: Schritt 4 + Neustart. Täglich 4 Uhr Neustart automatisch.
 Zugangsdaten stehen nur auf dem Pi, nie im Repo.
+
+## Ohne SSH: alles über die SD-Karte
+Nach dem Schreiben mit dem Imager die SD-Karte am PC lassen, Laufwerk **bootfs** öffnen:
+1. Datei `kameras.conf` dort anlegen (gleicher Aufbau wie die Vorlage). Wird bevorzugt gelesen; ändern = Karte in den PC, Datei bearbeiten, zurück.
+2. Datei `user-data` mit Editor öffnen, ganz unten anfügen (gibt es schon `runcmd:`, nur die Zeile mit `- ` darunter setzen):
+```
+runcmd:
+  - [ sh, -c, "curl -fsSL https://raw.githubusercontent.com/lolliversum/ha-addons/main/kamera-monitor/einrichten.sh | bash && reboot" ]
+```
+Erster Start mit LAN-Kabel, dauert 5–10 Min., dann startet er neu und zeigt die Kameras.

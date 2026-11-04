@@ -66,5 +66,5 @@ systemctl daemon-reload || true
 
 echo
 echo "FERTIG. Jetzt Kameras eintragen:"
-echo "  sudo nano /etc/kamera-monitor/kameras.conf"
+echo "  sudo nano /etc/kamera-monitor/kameras.conf   (oder kameras.conf auf der SD-Karte, Laufwerk bootfs)"
 echo "dann:  sudo reboot"

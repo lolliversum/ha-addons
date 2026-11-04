@@ -1,7 +1,10 @@
 #!/usr/bin/env bash
 # Kamera-Monitor: zeigt die Kameras aus /etc/kamera-monitor/kameras.conf als Raster.
 # Läuft innerhalb von X (startx), wird beim Einschalten automatisch gestartet.
-KONF="${KAMERA_KONF:-/etc/kamera-monitor/kameras.conf}"
+# Vorrang: kameras.conf auf der SD-Karte (Boot-Partition, am PC bearbeitbar), sonst /etc
+if [ -n "${KAMERA_KONF:-}" ]; then KONF="$KAMERA_KONF"
+elif [ -f /boot/firmware/kameras.conf ]; then KONF=/boot/firmware/kameras.conf
+else KONF=/etc/kamera-monitor/kameras.conf; fi
 
 # Bildschirm wach halten, Mauszeiger weg
 xset s off 2>/dev/null; xset s noblank 2>/dev/null; xset -dpms 2>/dev/null
@@ -23,7 +26,7 @@ while IFS='|' read -r name url; do
   case "$name" in \#*) continue ;; esac
   [ -z "$url" ] && continue
   NAMEN+=("$name"); QUELLEN+=("$url")
-done < "$KONF"
+done < <(tr -d '\r' < "$KONF")
 
 ANZAHL=${#QUELLEN[@]}
 if [ "$ANZAHL" -eq 0 ]; then
