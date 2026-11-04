@@ -40,7 +40,7 @@ ExecStart=-/sbin/agetty --autologin $NUTZER --noclear %I \$TERM
 EOF
 
 echo "== Grafik beim Anmelden starten =="
-PROFIL="$HEIM/.bash_profile"
+PROFIL="$HEIM/.profile"
 touch "$PROFIL"
 if ! grep -q "kamera-monitor" "$PROFIL"; then
   cat >> "$PROFIL" <<'EOF'
@@ -61,8 +61,8 @@ if [ -f /boot/firmware/cmdline.txt ] && ! grep -q "consoleblank=0" /boot/firmwar
   sed -i 's/$/ consoleblank=0/' /boot/firmware/cmdline.txt
 fi
 
-systemctl set-default multi-user.target >/dev/null
-systemctl daemon-reload
+systemctl set-default multi-user.target >/dev/null || true
+systemctl daemon-reload || true
 
 echo
 echo "FERTIG. Jetzt Kameras eintragen:"
