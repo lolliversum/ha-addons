@@ -1,0 +1,9 @@
+# Kamera-Monitor Produktionsstraße – Verbindung zu Home Assistant Gut
+# Datei auf die SD-Karte (Laufwerk bootfs) legen oder nach /etc/kamera-monitor/
+ha_url = http://192.168.3.133
+# Langlebiger Zugangstoken eines eigenen HA-Benutzers "kamera-monitor" (kein Admin nötig)
+ha_token = HIER_TOKEN_EINTRAGEN
+# Helfer mit der Kameraliste (kommt per Lolliversum Sync, nichts zu tun)
+ha_helfer = input_text.kamera_monitor_produktion
+# Streams aus go2rtc (App im HA-Gut), Port 8554
+stream_basis = rtsp://192.168.3.133:8554/

@@ -1,0 +1,5 @@
+# /config/go2rtc.yaml im Home Assistant Gut (App go2rtc). Passwörter nur hier, nie ins Git.
+# Je Kamera zwei Streams: klein fürs Raster, _hd für Vollbild/HA.
+streams:
+  presse:    rtsp://admin:PASSWORT@192.168.3.60:554/ch0_1.264
+  presse_hd: rtsp://admin:PASSWORT@192.168.3.60:554/ch0_0.264

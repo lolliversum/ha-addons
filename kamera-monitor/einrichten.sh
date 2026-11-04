@@ -18,17 +18,17 @@ QUELLE="https://raw.githubusercontent.com/lolliversum/ha-addons/main/kamera-moni
 echo "== Pakete installieren (dauert ein paar Minuten) =="
 apt-get update -qq
 DEBIAN_FRONTEND=noninteractive apt-get install -y -qq \
-  xserver-xorg xinit x11-xserver-utils unclutter mpv cec-utils curl >/dev/null
+  xserver-xorg xinit x11-xserver-utils x11-utils unclutter mpv cec-utils curl jq >/dev/null
 
 echo "== Programme ablegen =="
 mkdir -p /etc/kamera-monitor
 curl -fsSL "$QUELLE/kamera-monitor.sh" -o /usr/local/bin/kamera-monitor
 chmod 755 /usr/local/bin/kamera-monitor
-if [ ! -f /etc/kamera-monitor/kameras.conf ]; then
-  curl -fsSL "$QUELLE/kameras.conf.beispiel" -o /etc/kamera-monitor/kameras.conf
+if [ ! -f /etc/kamera-monitor/kamera-monitor.ini ] && [ ! -f /boot/firmware/kamera-monitor.ini ]; then
+  curl -fsSL "$QUELLE/kamera-monitor.ini.beispiel" -o /etc/kamera-monitor/kamera-monitor.ini
 fi
-chown root:"$NUTZER" /etc/kamera-monitor/kameras.conf
-chmod 640 /etc/kamera-monitor/kameras.conf
+chown -R root:"$NUTZER" /etc/kamera-monitor
+chmod 750 /etc/kamera-monitor; chmod 640 /etc/kamera-monitor/* 2>/dev/null || true
 usermod -aG video,render,tty,input "$NUTZER" || true
 
 echo "== Automatisch anmelden auf tty1 =="
@@ -65,6 +65,7 @@ systemctl set-default multi-user.target >/dev/null || true
 systemctl daemon-reload || true
 
 echo
-echo "FERTIG. Jetzt Kameras eintragen:"
-echo "  sudo nano /etc/kamera-monitor/kameras.conf   (oder kameras.conf auf der SD-Karte, Laufwerk bootfs)"
+echo "FERTIG. Einstellungen: kamera-monitor.ini auf der SD-Karte (bootfs) oder"
+echo "  sudo nano /etc/kamera-monitor/kamera-monitor.ini"
+echo "Kameraliste ändern: Home Assistant Gut → Helfer „Kamera-Monitor Produktion“."
 echo "dann:  sudo reboot"
