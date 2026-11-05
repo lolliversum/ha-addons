@@ -1,5 +1,5 @@
 name: Lolliversum Druckbrücke
-version: "2026.11.02.3"
+version: "2026.11.05.1"
 slug: lolliversum_druckbruecke
 description: Holt Druckaufträge vom Lolliversum-Portal und gibt sie an Drucker im lokalen Netz (keine offenen Ports).
 url: https://intranet.lolliversum.de/druck

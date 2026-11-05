@@ -24,7 +24,7 @@ Start: python3 druckbruecke.py            (Dauerschleife)
 import base64, ipaddress, json, os, re, socket, subprocess, sys, tempfile, threading, time, urllib.error, urllib.request
 from pathlib import Path
 
-VERSION = "2026-11-02"   # + Selbst-Update (alle 6 h, SHA-256 vom Portal)
+VERSION = "2026-11-05"   # + Selbst-Update (alle 6 h, SHA-256 vom Portal); 04.11.: Wiederholung bei 502/503/504 und Verbindungsabbruch (Server-Neustart)
 _VERSION_01_11 = "2026-11-01"   # + FRITZ!Box: Telefonliste (Namen + interne Nummern) alle 6 h ans Portal
 _VERSION_30_10 = "2026-10-30"   # + FRITZ!Box: Wählhilfe (TR-064) und Anrufmonitor (Port 1012), nur mit FRITZ_HOST
 _VERSION_ALT = "2026-10-23"   # + Rückkanal: Auftrag mit "antwort": true liest die Antwort des Druckers (Etikettenzähler)
@@ -61,8 +61,26 @@ def _anfrage(methode, pfad, daten=None):
                                  headers={"Authorization": f"Bearer {KONF['token']}", "Content-Type": "application/json",
                                           "X-Bruecke-Version": VERSION,
                                           "X-Bruecke-Info": socket.gethostname()[:60]})
-    with urllib.request.urlopen(req, timeout=20) as r:
-        return r.status, (r.read() or b"")
+    return _offen(req)
+
+
+_WARTE = (2, 4, 8)   # Sekunden zwischen den Wiederholungen
+
+
+def _offen(req, warte=None):
+    """Öffnet die Anfrage; bei 502/503/504 oder Verbindungsabbruch (Portal startet gerade neu) bis zu 3× wiederholen."""
+    warte = _WARTE if warte is None else warte
+    for versuch in range(len(warte) + 1):
+        try:
+            with urllib.request.urlopen(req, timeout=20) as r:
+                return r.status, (r.read() or b"")
+        except urllib.error.HTTPError as e:
+            if e.code not in (502, 503, 504) or versuch >= len(warte):
+                raise
+        except (urllib.error.URLError, ConnectionError, TimeoutError):
+            if versuch >= len(warte):
+                raise
+        time.sleep(warte[versuch])
 
 
 def ziel(drucker):
@@ -326,6 +344,8 @@ def monitor_zeile(z):
     t = z.strip().split(";")
     if len(t) >= 5 and t[1] == "RING":
         return {"art": "klingelt", "nummer": t[3], "nebenstelle": "", "verbindung": t[2]}
+    if len(t) >= 6 and t[1] == "CALL":   # 05.11.2026: ausgehend – Datum;CALL;ID;Nebenstelle;eigene Nr.;gewählte Nr.;Leitung
+        return {"art": "raus_gewaehlt", "nummer": t[5], "nebenstelle": t[3], "verbindung": t[2]}
     if len(t) >= 5 and t[1] == "CONNECT":
         return {"art": "angenommen", "nummer": t[4], "nebenstelle": t[3], "verbindung": t[2]}
     if len(t) >= 4 and t[1] == "DISCONNECT":   # 02.11.2026: Ende mit Dauer in Sekunden (0 = nie verbunden)
@@ -335,13 +355,23 @@ def monitor_zeile(z):
 
 def monitor_folge(offen, m):
     """02.11.2026: Monitor-Zeile → Meldung ans Portal (oder None). offen = {verbindung: {nummer, nebenstelle, angenommen}}.
-    Nur eingehende Gespräche. Ende: angenommen → „beendet“ mit Dauer, sonst „verpasst“."""
+    05.11.2026: ausgehend (CALL) → raus_gewaehlt, Ende → raus_beendet mit Dauer (0 = nicht erreicht). Ende: angenommen → „beendet“ mit Dauer, sonst „verpasst“."""
     v = m["verbindung"]
     if m["art"] == "klingelt":
         offen[v] = {"nummer": m["nummer"], "nebenstelle": "", "angenommen": False}
         return m
-    if v not in offen:   # ausgehendes Gespräch: nicht melden
+    if m["art"] == "raus_gewaehlt":   # 05.11.2026: ausgehend melden (Rückruf vom Tischtelefon sichtbar machen)
+        offen[v] = {"nummer": m["nummer"], "nebenstelle": m["nebenstelle"], "angenommen": False, "raus": True}
+        return m
+    if v not in offen:
         return None
+    if offen[v].get("raus"):
+        if m["art"] == "angenommen":
+            offen[v]["angenommen"] = True
+            return None
+        a = offen.pop(v)
+        return {"art": "raus_beendet", "nummer": a["nummer"], "nebenstelle": a["nebenstelle"],
+                "dauer": m["dauer"] if a["angenommen"] else 0, "verbindung": v}
     if m["art"] == "angenommen":
         offen[v].update(angenommen=True, nebenstelle=m["nebenstelle"])
         return m
