@@ -24,7 +24,7 @@ Start: python3 druckbruecke.py            (Dauerschleife)
 import base64, ipaddress, json, os, re, socket, subprocess, sys, tempfile, threading, time, urllib.error, urllib.request
 from pathlib import Path
 
-VERSION = "2026-11-05"   # + Selbst-Update (alle 6 h, SHA-256 vom Portal); 04.11.: Wiederholung bei 502/503/504 und Verbindungsabbruch (Server-Neustart)
+VERSION = "2026-11-19"   # 19.11.: Wählhilfe sicher zurückstellen (Meldung 127, MehrData/TAPICall); 14.11. abends: ausgelieferte Datei bekommt die CALL-Erkennung (ausgehende Anrufe, 05.11.) – beide Brücken-Dateien wieder gleich; 14.11.: schneller Takt nach Aufträgen (pause); + Selbst-Update (alle 6 h, SHA-256 vom Portal); 04.11.: Wiederholung bei 502/503/504 und Verbindungsabbruch (Server-Neustart)
 _VERSION_01_11 = "2026-11-01"   # + FRITZ!Box: Telefonliste (Namen + interne Nummern) alle 6 h ans Portal
 _VERSION_30_10 = "2026-10-30"   # + FRITZ!Box: Wählhilfe (TR-064) und Anrufmonitor (Port 1012), nur mit FRITZ_HOST
 _VERSION_ALT = "2026-10-23"   # + Rückkanal: Auftrag mit "antwort": true liest die Antwort des Druckers (Etikettenzähler)
@@ -45,6 +45,9 @@ def _konf():
         k["drucker"] = json.loads(e["DRUCK_DRUCKER"])
     k.setdefault("drucker", {})
     k["takt"] = float(e.get("DRUCK_TAKT") or k.get("takt_sekunden") or 2)
+    # 14.11.2026 X15 (presse [/fertig] p95 1,3 s): nach einem Auftrag eine Weile schneller nachfragen, siehe pause()
+    k["takt_heiss"] = float(e.get("DRUCK_TAKT_HEISS") or k.get("takt_heiss_sekunden") or 0.5)
+    k["heiss_sekunden"] = float(e.get("DRUCK_HEISS_SEK") or k.get("heiss_sekunden") or 20)
     k["fritz_host"] = e.get("FRITZ_HOST") or k.get("fritz_host") or ""            # z. B. 192.168.178.1 (leer = kein Telefon)
     k["fritz_benutzer"] = e.get("FRITZ_BENUTZER") or k.get("fritz_benutzer") or ""
     k["fritz_passwort"] = e.get("FRITZ_PASSWORT") or k.get("fritz_passwort") or ""
@@ -148,6 +151,20 @@ def drucken(auftrag):
             raise RuntimeError(f"unbekannte Druckerart {z['art']}")
 
 
+def pause(jetzt, letzter_auftrag, konf=None):
+    """Wartezeit bis zur nächsten leeren Abfrage. 14.11.2026 X15 D-LANGSAM (x15-leistung-tag5: /lollenstein/presse/…
+    [/fertig] p95 1,3 s): FERTIG/STOPP warten im Portal auf das ok der Brücke; die schlief nach einer leeren Runde volle
+    2 s (takt), im Mittel kam der Stopp also erst nach ~1 s an. Läuft gerade etwas (Presse druckt, Live-Zähler fragt alle
+    6 s, Etiketten kommen), fragt die Brücke bis heiss_sekunden nach dem letzten Auftrag im takt_heiss (0,5 s) nach,
+    danach wieder im ruhigen takt. Leerlauf (EP-Läden, nachts) bleibt bei 2 s; Rückweg: DRUCK_TAKT_HEISS=2."""
+    k = KONF if konf is None else konf
+    takt = float(k.get("takt") or 2)
+    heiss = min(takt, float(k.get("takt_heiss") or takt))
+    if letzter_auftrag and jetzt - letzter_auftrag < float(k.get("heiss_sekunden") or 0):
+        return heiss
+    return takt
+
+
 def runde():
     try:
         status, roh = _anfrage("GET", f"/druck/api/{KONF['standort']}/naechster")
@@ -245,28 +262,83 @@ def _tr064(aktion, argumente, dienst=None, pfad="/upnp/control/x_voip"):
         return r.read()
 
 
+# 19.11.2026 (Meldung 127: „aus MehrData kann nicht mehr raus telefoniert werden, aus dem Lolliversum geht es“):
+# TAPICall/MehrData auf den PCs nutzt dieselbe FRITZ!Box-Wählhilfe. Das Zurückstellen lief vorher in einem eigenen Faden mit
+# „vorher“ = gerade eingestelltes Telefon: zwei Portal-Anrufe kurz nacheinander (vorher = Portal-Telefon), ein Fehler beim
+# Zurückstellen oder ein Neustart/Selbst-Update der Brücke in den 8 s ließen die Wählhilfe dauerhaft auf dem Telefon des
+# Portal-Nutzers stehen. Jetzt: Grundstellung = was NICHT die Brücke eingestellt hat (oder fest per FRITZ_WAEHLHILFE_GRUND),
+# Zurückstellen im Wähl-Takt mit Wiederholung, Zustand in waehlhilfe.json (übersteht Neustart; best effort).
+ZURUECK_SEK = int(os.environ.get("FRITZ_ZURUECK_SEK", "8"))
+_WH = {"grund": "", "gesetzt": "", "zurueck_ab": 0.0}
+_wh_sperre = threading.Lock()
+
+
+def _wh_datei():
+    for d in (os.environ.get("FRITZ_ZUSTAND_ORDNER", ""), "/data", str(Path(__file__).resolve().parent)):
+        if d and os.path.isdir(d) and os.access(d, os.W_OK):
+            return Path(d) / "waehlhilfe.json"
+    return None
+
+
+def _wh_laden():
+    d = _wh_datei()
+    try:
+        if d and d.exists():
+            j = json.loads(d.read_text())
+            _WH.update(grund=str(j.get("grund", "")), gesetzt=str(j.get("gesetzt", "")), zurueck_ab=float(j.get("zurueck_ab", 0) or 0))
+    except Exception:  # noqa
+        pass
+
+
+def _wh_speichern():
+    d = _wh_datei()
+    try:
+        if d:
+            d.write_text(json.dumps(_WH))
+    except Exception:  # noqa
+        pass
+
+
+def waehlhilfe_grund():
+    return os.environ.get("FRITZ_WAEHLHILFE_GRUND", "").strip() or _WH["grund"]
+
+
 def fritz_waehlen(nummer, telefon=""):
     nummer = re.sub(r"[^0-9*#]", "", str(nummer))
     if not nummer:
         raise ValueError("keine Nummer")
-    vorher = ""
     if telefon:
-        # 02.11.2026: TAPICall auf den PCs nutzt dieselbe Wählhilfe – vorher eingestelltes Telefon merken und danach
-        # zurückstellen, damit deren nächster Anruf nicht beim Telefon des Portal-Nutzers klingelt.
-        try:
-            vorher = _feld(_tr064("X_AVM-DE_DialGetConfig", {}), "NewX_AVM-DE_PhoneName")
-        except Exception:  # noqa
-            vorher = ""
-        _tr064("X_AVM-DE_DialSetConfig", {"NewX_AVM-DE_PhoneName": telefon})
-    _tr064("X_AVM-DE_DialNumber", {"NewX_AVM-DE_PhoneNumber": nummer})
-    if vorher and vorher != telefon:
-        def _zurueck():
-            time.sleep(int(os.environ.get("FRITZ_ZURUECK_SEK", "8")))
+        with _wh_sperre:
             try:
-                _tr064("X_AVM-DE_DialSetConfig", {"NewX_AVM-DE_PhoneName": vorher})
+                aktuell = _feld(_tr064("X_AVM-DE_DialGetConfig", {}), "NewX_AVM-DE_PhoneName")
+            except Exception:  # noqa
+                aktuell = ""
+            if aktuell and aktuell != _WH["gesetzt"]:
+                _WH["grund"] = aktuell   # von TAPICall/Hand eingestellt → das ist die Grundstellung
+            _tr064("X_AVM-DE_DialSetConfig", {"NewX_AVM-DE_PhoneName": telefon})
+            _WH.update(gesetzt=telefon, zurueck_ab=time.time() + ZURUECK_SEK)
+            _wh_speichern()
+    _tr064("X_AVM-DE_DialNumber", {"NewX_AVM-DE_PhoneNumber": nummer})
+
+
+def waehlhilfe_zurueck(jetzt=None):
+    """Stellt die Wählhilfe auf die Grundstellung zurück, sobald fällig. Fehler → in 30 s nochmal. Gibt Text oder ""."""
+    jetzt = time.time() if jetzt is None else jetzt
+    with _wh_sperre:
+        if not _WH["gesetzt"] or _WH["zurueck_ab"] > jetzt:
+            return ""
+        grund = waehlhilfe_grund()
+        if grund and grund != _WH["gesetzt"]:
+            try:
+                _tr064("X_AVM-DE_DialSetConfig", {"NewX_AVM-DE_PhoneName": grund})
             except Exception as e:  # noqa
-                print("Wählhilfe zurückstellen fehlgeschlagen:", e, flush=True)
-        threading.Thread(target=_zurueck, daemon=True).start()
+                _WH["zurueck_ab"] = jetzt + 30
+                _wh_speichern()
+                print("Wählhilfe zurückstellen fehlgeschlagen (nochmal in 30 s):", str(e)[:150], flush=True)
+                return "fehler"
+        _WH.update(gesetzt="", zurueck_ab=0.0)
+        _wh_speichern()
+        return grund or "ohne_grund"
 
 
 def _feld(xml, name):
@@ -417,7 +489,9 @@ def telefon_starten():
 
     def _waehlen():
         letzte = 0
+        _wh_laden()   # 19.11.2026: offenes Zurückstellen aus der Zeit vor dem Neustart nachholen
         while True:
+            waehlhilfe_zurueck()
             if time.time() - letzte > 6 * 3600:   # Telefonliste beim Start und alle 6 h
                 letzte = time.time()
                 telefone_melden()
@@ -445,14 +519,17 @@ def main(argv):
     if update_pruefen():
         neu_starten()
     letzt = time.time()
+    letzter_auftrag = 0.0
     telefon_starten()
     while True:
         if time.time() - letzt > UPDATE_ABSTAND:
             letzt = time.time()
             if update_pruefen():
                 neu_starten()
-        if not runde():
-            time.sleep(KONF["takt"])
+        if runde():
+            letzter_auftrag = time.time()
+        else:
+            time.sleep(pause(time.time(), letzter_auftrag))
 
 
 if __name__ == "__main__":
