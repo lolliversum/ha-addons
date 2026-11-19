@@ -24,7 +24,7 @@ Start: python3 druckbruecke.py            (Dauerschleife)
 import base64, ipaddress, json, os, re, socket, subprocess, sys, tempfile, threading, time, urllib.error, urllib.request
 from pathlib import Path
 
-VERSION = "2026-11-05"   # + Selbst-Update (alle 6 h, SHA-256 vom Portal); 04.11.: Wiederholung bei 502/503/504 und Verbindungsabbruch (Server-Neustart)
+VERSION = "2026-11-15"   # 14.11. abends: ausgelieferte Datei bekommt die CALL-Erkennung (ausgehende Anrufe, 05.11.) – beide Brücken-Dateien wieder gleich; 14.11.: schneller Takt nach Aufträgen (pause); + Selbst-Update (alle 6 h, SHA-256 vom Portal); 04.11.: Wiederholung bei 502/503/504 und Verbindungsabbruch (Server-Neustart)
 _VERSION_01_11 = "2026-11-01"   # + FRITZ!Box: Telefonliste (Namen + interne Nummern) alle 6 h ans Portal
 _VERSION_30_10 = "2026-10-30"   # + FRITZ!Box: Wählhilfe (TR-064) und Anrufmonitor (Port 1012), nur mit FRITZ_HOST
 _VERSION_ALT = "2026-10-23"   # + Rückkanal: Auftrag mit "antwort": true liest die Antwort des Druckers (Etikettenzähler)
@@ -45,6 +45,9 @@ def _konf():
         k["drucker"] = json.loads(e["DRUCK_DRUCKER"])
     k.setdefault("drucker", {})
     k["takt"] = float(e.get("DRUCK_TAKT") or k.get("takt_sekunden") or 2)
+    # 14.11.2026 X15 (presse [/fertig] p95 1,3 s): nach einem Auftrag eine Weile schneller nachfragen, siehe pause()
+    k["takt_heiss"] = float(e.get("DRUCK_TAKT_HEISS") or k.get("takt_heiss_sekunden") or 0.5)
+    k["heiss_sekunden"] = float(e.get("DRUCK_HEISS_SEK") or k.get("heiss_sekunden") or 20)
     k["fritz_host"] = e.get("FRITZ_HOST") or k.get("fritz_host") or ""            # z. B. 192.168.178.1 (leer = kein Telefon)
     k["fritz_benutzer"] = e.get("FRITZ_BENUTZER") or k.get("fritz_benutzer") or ""
     k["fritz_passwort"] = e.get("FRITZ_PASSWORT") or k.get("fritz_passwort") or ""
@@ -146,6 +149,20 @@ def drucken(auftrag):
                 subprocess.run(["lp", "-d", z["queue"], f.name], check=True, capture_output=True, timeout=60)
         else:
             raise RuntimeError(f"unbekannte Druckerart {z['art']}")
+
+
+def pause(jetzt, letzter_auftrag, konf=None):
+    """Wartezeit bis zur nächsten leeren Abfrage. 14.11.2026 X15 D-LANGSAM (x15-leistung-tag5: /lollenstein/presse/…
+    [/fertig] p95 1,3 s): FERTIG/STOPP warten im Portal auf das ok der Brücke; die schlief nach einer leeren Runde volle
+    2 s (takt), im Mittel kam der Stopp also erst nach ~1 s an. Läuft gerade etwas (Presse druckt, Live-Zähler fragt alle
+    6 s, Etiketten kommen), fragt die Brücke bis heiss_sekunden nach dem letzten Auftrag im takt_heiss (0,5 s) nach,
+    danach wieder im ruhigen takt. Leerlauf (EP-Läden, nachts) bleibt bei 2 s; Rückweg: DRUCK_TAKT_HEISS=2."""
+    k = KONF if konf is None else konf
+    takt = float(k.get("takt") or 2)
+    heiss = min(takt, float(k.get("takt_heiss") or takt))
+    if letzter_auftrag and jetzt - letzter_auftrag < float(k.get("heiss_sekunden") or 0):
+        return heiss
+    return takt
 
 
 def runde():
@@ -445,14 +462,17 @@ def main(argv):
     if update_pruefen():
         neu_starten()
     letzt = time.time()
+    letzter_auftrag = 0.0
     telefon_starten()
     while True:
         if time.time() - letzt > UPDATE_ABSTAND:
             letzt = time.time()
             if update_pruefen():
                 neu_starten()
-        if not runde():
-            time.sleep(KONF["takt"])
+        if runde():
+            letzter_auftrag = time.time()
+        else:
+            time.sleep(pause(time.time(), letzter_auftrag))
 
 
 if __name__ == "__main__":
